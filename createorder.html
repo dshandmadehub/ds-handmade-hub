@@ -182,7 +182,7 @@ async function insertOrder(payment){
     // the successfully-created order if the email service is temporarily unavailable.
     try{
   const { error: emailError } =
-    await supabase.functions.invoke("send-order-confirmation",{
+    await supabase.functions.invoke("super-function",{
       body:{ order_id:data.order_id }
     });
 
