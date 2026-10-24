@@ -3987,6 +3987,44 @@ async function saveShipment() {
             throw result.error;
         }
 
+        // Send the customer a premium shipping email only when the status
+        // changes to "shipped". Re-saving an already-shipped record won't resend it.
+        const previousShipmentStatus = String(
+            shipment?.shipment_status || ""
+        ).trim().toLowerCase();
+        const currentShipmentStatus = String(status || "")
+            .trim()
+            .toLowerCase();
+        let shipmentEmailWarning = "";
+
+        if (
+            currentShipmentStatus === "shipped" &&
+            previousShipmentStatus !== "shipped"
+        ) {
+            try {
+                const { data: emailData, error: emailError } =
+                    await supabase.functions.invoke(
+                        "send-shipment-notification",
+                        {
+                            body: { order_id: orderId }
+                        }
+                    );
+
+                if (emailError) {
+                    console.error("Shipment email trigger failed:", emailError);
+                    shipmentEmailWarning =
+                        "Shipment saved, but the customer email could not be sent. Check the send-shipment-notification Edge Function logs.";
+                } else if (emailData?.success !== true) {
+                    console.error("Shipment email was not sent:", emailData);
+                    shipmentEmailWarning = emailData?.message ||
+                        "Shipment saved, but the customer email was not sent.";
+                }
+            } catch (emailError) {
+                console.error("Shipment email trigger error:", emailError);
+                shipmentEmailWarning =
+                    "Shipment saved, but the customer email trigger failed.";
+            }
+        }
 
         /* Reload shipment */
 
@@ -4005,6 +4043,10 @@ async function saveShipment() {
         showSuccess(
             "Shipment details saved successfully."
         );
+
+        if (shipmentEmailWarning) {
+            showOrderAlert(shipmentEmailWarning, "error", "Shipment email not sent");
+        }
 
     }
 
