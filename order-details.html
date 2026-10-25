@@ -2467,6 +2467,9 @@ let shipmentStatuses = [];
 
 let shippingMethods = [];
 
+// Tracks whether the shipment form has changed since it was opened.
+let shipmentFormInitialState = "";
+
 
 /* =====================================================
    ORDER ID
@@ -3694,6 +3697,9 @@ function openShipmentModal() {
         shipment?.notes || "";
 
 
+    // Save stays disabled until the user creates or edits shipment details.
+    setupShipmentDirtyTracking();
+
     modal.classList.add("active");
 
     modal.setAttribute(
@@ -3702,6 +3708,63 @@ function openShipmentModal() {
     );
 }
 
+
+function getShipmentFormState() {
+    const fieldIds = [
+        "shipmentCourier",
+        "shipmentStatus",
+        "shippingMethod",
+        "trackingNumber",
+        "trackingUrl",
+        "shippedDate",
+        "expectedDeliveryDate",
+        "deliveredDate",
+        "packageCount",
+        "shipmentNotes"
+    ];
+
+    return JSON.stringify(fieldIds.map(id => {
+        const field = document.getElementById(id);
+        return field ? field.value : "";
+    }));
+}
+
+function updateShipmentSaveButtonState() {
+    const button = document.getElementById("saveShipmentBtn");
+    const label = document.getElementById("saveShipmentText");
+    if (!button || !label || label.textContent === "Saving...") return;
+
+    button.disabled = getShipmentFormState() === shipmentFormInitialState;
+}
+
+function setupShipmentDirtyTracking() {
+    const fieldIds = [
+        "shipmentCourier",
+        "shipmentStatus",
+        "shippingMethod",
+        "trackingNumber",
+        "trackingUrl",
+        "shippedDate",
+        "expectedDeliveryDate",
+        "deliveredDate",
+        "packageCount",
+        "shipmentNotes"
+    ];
+
+    shipmentFormInitialState = getShipmentFormState();
+    fieldIds.forEach(id => {
+        const field = document.getElementById(id);
+        if (!field) return;
+        field.oninput = updateShipmentSaveButtonState;
+        field.onchange = () => {
+            updateShipmentSaveButtonState();
+            if (id === "shipmentStatus") applyShipmentFieldRules();
+        };
+    });
+
+    const button = document.getElementById("saveShipmentBtn");
+    if (button) button.disabled = true;
+}
 
 function applyShipmentFieldRules() {
 
@@ -3987,43 +4050,31 @@ async function saveShipment() {
             throw result.error;
         }
 
-        // Send the customer a premium shipping email only when the status
-        // changes to "shipped". Re-saving an already-shipped record won't resend it.
-        const previousShipmentStatus = String(
-            shipment?.shipment_status || ""
-        ).trim().toLowerCase();
-        const currentShipmentStatus = String(status || "")
-            .trim()
-            .toLowerCase();
+        // Every successful shipment save sends the customer the latest shipment update.
+        // The Edge Function builds the email from the shipment record saved above.
         let shipmentEmailWarning = "";
+        try {
+            const { data: emailData, error: emailError } =
+                await supabase.functions.invoke(
+                    "send-shipment-notification",
+                    { body: { order_id: orderId } }
+                );
 
-        if (
-            currentShipmentStatus === "shipped" &&
-            previousShipmentStatus !== "shipped"
-        ) {
-            try {
-                const { data: emailData, error: emailError } =
-                    await supabase.functions.invoke(
-                        "send-shipment-notification",
-                        {
-                            body: { order_id: orderId }
-                        }
-                    );
-
-                if (emailError) {
-                    console.error("Shipment email trigger failed:", emailError);
-                    shipmentEmailWarning =
-                        "Shipment saved, but the customer email could not be sent. Check the send-shipment-notification Edge Function logs.";
-                } else if (emailData?.success !== true) {
-                    console.error("Shipment email was not sent:", emailData);
-                    shipmentEmailWarning = emailData?.message ||
-                        "Shipment saved, but the customer email was not sent.";
-                }
-            } catch (emailError) {
-                console.error("Shipment email trigger error:", emailError);
+            if (emailError) {
+                console.error("Shipment email trigger failed:", emailError);
                 shipmentEmailWarning =
-                    "Shipment saved, but the customer email trigger failed.";
+                    "Shipment details were saved, but the customer email could not be sent. Check the Edge Function logs and browser console.";
+            } else if (emailData?.success !== true) {
+                console.error("Shipment email was not sent:", emailData);
+                shipmentEmailWarning = emailData?.message ||
+                    "Shipment details were saved, but the customer email was not sent.";
+            } else {
+                console.info("Shipment notification email accepted:", emailData);
             }
+        } catch (emailError) {
+            console.error("Shipment email trigger error:", emailError);
+            shipmentEmailWarning =
+                "Shipment details were saved, but the customer email trigger failed.";
         }
 
         /* Reload shipment */
@@ -4067,10 +4118,13 @@ async function saveShipment() {
 
     finally {
 
-        saveButton.disabled = false;
-
         saveText.textContent =
             "Save Shipment";
+
+        // Keep Save disabled when the form matches its saved/opened state;
+        // leave it enabled after validation or database errors if edits remain.
+        saveButton.disabled =
+            getShipmentFormState() === shipmentFormInitialState;
 
     }
 
